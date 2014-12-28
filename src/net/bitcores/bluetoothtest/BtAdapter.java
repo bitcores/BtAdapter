@@ -22,7 +22,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-//	revision 0001
+//	revision 0002
 
 package net.bitcores.bluetoothtest;
 
@@ -40,15 +40,14 @@ import android.os.Handler;
 import android.util.Log;
 
 public class BtAdapter {
-	BluetoothAdapter mBluetoothAdapter;
+	private BluetoothAdapter mBluetoothAdapter;
 	
 	private AcceptThread mAcceptThread;
 	private ConnectThread mConnectThread;
 	private ConnectedThread mConnectedThread;
-	private BluetoothDevice activeDevice;
 	
-	private Context btContext;
-	private Handler btHandler;	
+	private Context mContext;
+	private Handler mHandler;	
 	
 	static String NAME = "Pants";
 	//	this UUID is required for connecting to HC-06
@@ -57,6 +56,8 @@ public class BtAdapter {
 	static UUID MY_UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB");
 	
 	static final String TAG = "bluetoothtest";
+	
+	public BluetoothDevice mActiveDevice;
 	
 	public BtAdapter() {
 		
@@ -70,8 +71,8 @@ public class BtAdapter {
 				return false;
 			}
 			
-			btContext = context;
-			btHandler = handler;
+			mContext = context;
+			mHandler = handler;
 		}
 		
 		return true;
@@ -79,22 +80,24 @@ public class BtAdapter {
 	
 	public void endBt() {
 		mBluetoothAdapter = null;
-		btContext = null;
-		btHandler = null;
+		mContext = null;
+		mHandler = null;
 	}
 	
 	public void connectDevice(String address) {		
 		Log.i(TAG, "connecting to '" + address + "'");
 		
-		BluetoothDevice activeDevice = mBluetoothAdapter.getRemoteDevice(address);
-		connect(activeDevice);
+		//	setting a public btdevice variable will allow us to get information on the current connected device
+		//	in the ui thread or other functions as needed
+		mActiveDevice = mBluetoothAdapter.getRemoteDevice(address);
+		connect(mActiveDevice);
 	}
 	
 	public void disconnectDevice() {
-		if (activeDevice != null) {
-			disconnect(activeDevice);
+		if (mActiveDevice != null) {
+			disconnect(mActiveDevice);
 			
-			activeDevice = null;
+			mActiveDevice = null;
 			//connectedBt.setText("");
 			//outputView.setText("");
 		}
@@ -109,52 +112,66 @@ public class BtAdapter {
 		r.write(output);
 	}
 	
-	private synchronized void disconnect(BluetoothDevice device) {
-		if (mConnectThread != null) {
-			mConnectThread.cancel();
-			mConnectThread = null;
-		}
-		
-		if (mConnectedThread != null) {
-			mConnectedThread.cancel();
-			mConnectedThread = null;
-		}
-		
+	
+	//	these could potentially be left unsynchronized so long as they are only called from within synchronized methods
+	//	but they are called fairly often, as you see below, and may need to be called individually in the future
+	private synchronized void endAcceptThread() {
 		if (mAcceptThread != null) {
 			mAcceptThread.cancel();
 			mAcceptThread = null;
 		}
-	}
-	
-	private synchronized void connect(BluetoothDevice device) {
-		
+	}	
+	private synchronized void endConnectThread() {
 		if (mConnectThread != null) {
 			mConnectThread.cancel();
 			mConnectThread = null;
 		}
-		
+	}	
+	private synchronized void endConnectedThread() {
 		if (mConnectedThread != null) {
 			mConnectedThread.cancel();
 			mConnectedThread = null;
 		}
+	}
+	
+	private synchronized void listen() {
+		endConnectThread();	
+		endConnectedThread();
+		endAcceptThread();
+		
+		mAcceptThread = new AcceptThread();
+		mAcceptThread.start();
+	}
+	
+	private synchronized void stopListen() {
+		endAcceptThread();
+	}
+	
+	
+	private synchronized void connect(BluetoothDevice device) {
+		
+		endConnectThread();	
+		endConnectedThread();
 		
 		mConnectThread = new ConnectThread(device);
 		mConnectThread.start();
 	}
 	
 	private synchronized void connected(BluetoothSocket socket, BluetoothDevice device) {
-		if (mConnectThread != null) {
-			mConnectThread.cancel();
-			mConnectThread = null;
-		}
 		
-		if (mConnectedThread != null) {
-			mConnectedThread.cancel();
-			mConnectedThread = null;
-		}
+		endConnectThread();
+		endConnectedThread();
+		endAcceptThread();
 		
 		mConnectedThread = new ConnectedThread(socket);
 		mConnectedThread.start();
+	}
+	
+	private synchronized void disconnect(BluetoothDevice device) {
+		
+		endConnectThread();	
+		endConnectedThread();	
+
 	}
 	
 	//	for accepting connections. will not work with HC-06 because it is slave mode only?
@@ -272,7 +289,7 @@ public class BtAdapter {
 				try {
 					bytes = mmInStream.read(buffer);
 					//	send messages back to the UI thread
-					btHandler.obtainMessage(1, bytes, -1, buffer).sendToTarget();
+					mHandler.obtainMessage(1, bytes, -1, buffer).sendToTarget();
 				} catch (IOException e) {
 					break;
 				}
