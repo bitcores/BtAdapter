@@ -22,13 +22,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-//	revision 0002
+//	revision 0003
 
 package net.bitcores.bluetoothtest;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.HashMap;
+import java.util.Set;
 import java.util.UUID;
 
 import android.bluetooth.BluetoothAdapter;
@@ -40,14 +42,22 @@ import android.os.Handler;
 import android.util.Log;
 
 public class BtAdapter {
-	private BluetoothAdapter mBluetoothAdapter;
-	
 	private AcceptThread mAcceptThread;
 	private ConnectThread mConnectThread;
-	private ConnectedThread mConnectedThread;
 	
 	private Context mContext;
-	private Handler mHandler;	
+	private Handler mHandler;
+	
+	//	for simplicity sake we will use the hashmap below even if multiconnectmode is disabled
+	//	however we will manage connections to prevent there being more than one active connection
+	//	we also want this set only during initBt to prevent any confusing in switching modes
+	private boolean multiConnectionMode = false;
+	
+	//	theres technically no reason why we cannot have multiple bluetooth connections at once
+	//	but they need to be managed in code which means we need to have reference to, at the least,
+	//	the device MAC address and the connectedthread for that connection
+	public HashMap<String, ConnectedThread> connectionData = new HashMap<String, ConnectedThread>();
+	//	UI may also want a list of connected devices by MAC address and name
 	
 	static String NAME = "Pants";
 	//	this UUID is required for connecting to HC-06
@@ -57,13 +67,28 @@ public class BtAdapter {
 	
 	static final String TAG = "bluetoothtest";
 	
-	public BluetoothDevice mActiveDevice;
+	//	because of the number of non-blocking calls available from the bluetooth adapter
+	//	we may want it available in the UI thread, so lets make this public so it can be
+	//	referenced from there.
+	//	care should be made so that no calls are made to it unless initBt returns true
+	public BluetoothAdapter mBluetoothAdapter;
+	
+	//	rather than having one overall state variable i will have three because this lets
+	//	me track
+    public static boolean STATE_LISTENING = false;
+    public static boolean STATE_CONNECTING = false;
+    public static boolean STATE_CONNECTED = false;
+    
+    //	message types to send back to the handler
+    public static final int MESSAGE_STATE_CHANGE = 0;
+    public static final int MESSAGE_CONNECTED_DEVICE = 1;
+    public static final int MESSAGE_RECEIVE_DATA = 2;
 	
 	public BtAdapter() {
 		
 	}
 	
-	public boolean initBt(Context context, Handler handler) {
+	public boolean initBt(Context context, Handler handler, Boolean mode) {
 		if (mBluetoothAdapter == null) {
 			mBluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
 			
@@ -71,8 +96,10 @@ public class BtAdapter {
 				return false;
 			}
 			
+			resetStates();
 			mContext = context;
 			mHandler = handler;
+			multiConnectionMode = mode;
 		}
 		
 		return true;
@@ -80,36 +107,48 @@ public class BtAdapter {
 	
 	public void endBt() {
 		mBluetoothAdapter = null;
+		clearConnectionData(null);
+		resetStates();
 		mContext = null;
 		mHandler = null;
+		multiConnectionMode = false;
 	}
 	
+	public void resetStates() {
+		STATE_LISTENING = false;
+		STATE_CONNECTING = false;
+		STATE_CONNECTED = false;
+	}
+		
 	public void connectDevice(String address) {		
 		Log.i(TAG, "connecting to '" + address + "'");
 		
 		//	setting a public btdevice variable will allow us to get information on the current connected device
 		//	in the ui thread or other functions as needed
-		mActiveDevice = mBluetoothAdapter.getRemoteDevice(address);
-		connect(mActiveDevice);
+		BluetoothDevice device = mBluetoothAdapter.getRemoteDevice(address);
+		connect(device);
 	}
 	
-	public void disconnectDevice() {
-		if (mActiveDevice != null) {
-			disconnect(mActiveDevice);
-			
-			mActiveDevice = null;
-			//connectedBt.setText("");
-			//outputView.setText("");
+	public void disconnectDevice(String address) {
+		ConnectedThread mmConnectedThread = connectionData.get(address);
+		if (mmConnectedThread != null) {
+			disconnect();
+			clearConnectionData(mmConnectedThread);
+			connectionData.remove(address);
 		}
 	}
 	
-	public void write(byte[] output) {
-		ConnectedThread r;
-		synchronized (this) {
-			r = mConnectedThread;
+	public void write(String address, byte[] output) {
+		ConnectedThread target;
+
+		synchronized (BtAdapter.this) {
+			target = connectionData.get(address);
 		}
+		if (target == null) {
+			return;
+		} 
 		
-		r.write(output);
+		target.write(output);
 	}
 	
 	
@@ -120,61 +159,84 @@ public class BtAdapter {
 			mAcceptThread.cancel();
 			mAcceptThread = null;
 		}
+		STATE_LISTENING = false;
 	}	
 	private synchronized void endConnectThread() {
 		if (mConnectThread != null) {
 			mConnectThread.cancel();
 			mConnectThread = null;
 		}
+		STATE_CONNECTING = false;
 	}	
 	private synchronized void endConnectedThread() {
-		if (mConnectedThread != null) {
-			mConnectedThread.cancel();
-			mConnectedThread = null;
-		}
+
+		STATE_CONNECTED = false;
+	}
+	private synchronized void clearConnectionData(ConnectedThread mmConnectedThread) {
+		if (mmConnectedThread == null) {
+			String[] keys = connectionData.keySet().toArray(new String[connectionData.size()]);
+			for (String address : keys) {
+				ConnectedThread thread = connectionData.get(address);
+				thread.cancel();
+				connectionData.remove(address);
+			}
+		} else {
+			mmConnectedThread.cancel();
+		}	
 	}
 	
-	private synchronized void listen() {
-		endConnectThread();	
-		endConnectedThread();
+	private synchronized void accept() {
 		endAcceptThread();
+		endConnectThread();	
+		if (!multiConnectionMode) {	
+			clearConnectionData(null);
+			STATE_LISTENING = true;
+		}
 		
 		mAcceptThread = new AcceptThread();
 		mAcceptThread.start();
+		
 	}
 	
-	private synchronized void stopListen() {
+	private synchronized void endAccept() {
 		endAcceptThread();
 	}
 	
-	
 	private synchronized void connect(BluetoothDevice device) {
-		
 		endConnectThread();	
-		endConnectedThread();
+		if (!multiConnectionMode) {		
+			clearConnectionData(null);
+			STATE_CONNECTING = true;
+		}
 		
 		mConnectThread = new ConnectThread(device);
 		mConnectThread.start();
 	}
 	
 	private synchronized void connected(BluetoothSocket socket, BluetoothDevice device) {
-		
-		endConnectThread();
-		endConnectedThread();
 		endAcceptThread();
-		
-		mConnectedThread = new ConnectedThread(socket);
-		mConnectedThread.start();
+		endConnectThread();		
+		if (!multiConnectionMode) {	
+			clearConnectionData(null);
+			STATE_CONNECTED = true;
+		}
+		String address = device.getAddress();
+		connectionData.put(address, new ConnectedThread(socket));
+		connectionData.get(address).start();
 	}
 	
-	private synchronized void disconnect(BluetoothDevice device) {
+	private synchronized void disconnect() {
 		
 		endConnectThread();	
 		endConnectedThread();	
 
 	}
 	
+	
+	//	THREADS
 	//	for accepting connections. will not work with HC-06 because it is slave mode only?
+	//	this needs some major work but i will leave it for later as it isn't necessary in 
+	//	in my current testing platorm
 	private class AcceptThread extends Thread {
 		private final BluetoothServerSocket mmServerSocket;
 		
@@ -211,8 +273,7 @@ public class BtAdapter {
 			} catch (IOException e) { }
 		}
 	}
-	
-	
+		
 	private class ConnectThread extends Thread {
 		private final BluetoothSocket mmSocket;
 		private final BluetoothDevice mmDevice;
@@ -245,7 +306,7 @@ public class BtAdapter {
 			// socket management shit
 			//manageConnectedSocket(mmSocket);
 			
-			synchronized (this) {
+			synchronized (BtAdapter.this) {
 				mConnectThread = null;
 			}
 			
@@ -261,6 +322,7 @@ public class BtAdapter {
 	}
 	
 	private class ConnectedThread extends Thread {
+		private final BluetoothDevice mmDevice;
 		private final BluetoothSocket mmSocket;
 		private final InputStream mmInStream;
 		private final OutputStream mmOutStream;
@@ -275,6 +337,7 @@ public class BtAdapter {
 				tmpOut = socket.getOutputStream();
 			} catch (IOException e) { }
 			
+			mmDevice = mmSocket.getRemoteDevice();
 			mmInStream = tmpIn;
 			mmOutStream = tmpOut;
 		}
@@ -282,8 +345,10 @@ public class BtAdapter {
 		public void run() {
 			byte[] buffer = new byte[1024];
 			int bytes;
-			
+			String address = mmDevice.getAddress();
 			Log.i(TAG, "listening on socket");
+			
+			write(address.getBytes());
 			
 			while (true) {
 				try {
@@ -294,6 +359,7 @@ public class BtAdapter {
 					break;
 				}
 			}
+			
 		}
 		
 		public void write(byte[] bytes) {
