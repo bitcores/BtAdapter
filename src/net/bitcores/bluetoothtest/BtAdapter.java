@@ -22,7 +22,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-//	revision 0003
+//	revision 0004
 
 package net.bitcores.bluetoothtest;
 
@@ -30,7 +30,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.HashMap;
-import java.util.Set;
 import java.util.UUID;
 
 import android.bluetooth.BluetoothAdapter;
@@ -38,7 +37,9 @@ import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothServerSocket;
 import android.bluetooth.BluetoothSocket;
 import android.content.Context;
+import android.os.Bundle;
 import android.os.Handler;
+import android.os.Message;
 import android.util.Log;
 
 public class BtAdapter {
@@ -74,7 +75,7 @@ public class BtAdapter {
 	public BluetoothAdapter mBluetoothAdapter;
 	
 	//	rather than having one overall state variable i will have three because this lets
-	//	me track
+	//	me track the listening state separately
     public static boolean STATE_LISTENING = false;
     public static boolean STATE_CONNECTING = false;
     public static boolean STATE_CONNECTED = false;
@@ -83,6 +84,7 @@ public class BtAdapter {
     public static final int MESSAGE_STATE_CHANGE = 0;
     public static final int MESSAGE_CONNECTED_DEVICE = 1;
     public static final int MESSAGE_RECEIVE_DATA = 2;
+    public static final int MESSAGE_DISCONNECT_DEVICE = 3;
 	
 	public BtAdapter() {
 		
@@ -119,7 +121,14 @@ public class BtAdapter {
 		STATE_CONNECTING = false;
 		STATE_CONNECTED = false;
 	}
-		
+	
+	public void startListen() {
+		accept();
+	}
+	public void endListen() {
+		endAccept();
+	}
+	
 	public void connectDevice(String address) {		
 		Log.i(TAG, "connecting to '" + address + "'");
 		
@@ -130,12 +139,22 @@ public class BtAdapter {
 	}
 	
 	public void disconnectDevice(String address) {
+		String sendDisconn = "d\n";
+		write(address, sendDisconn.getBytes());
+		
+		Log.i(TAG, "do disconnect");
 		ConnectedThread mmConnectedThread = connectionData.get(address);
 		if (mmConnectedThread != null) {
 			disconnect();
 			clearConnectionData(mmConnectedThread);
 			connectionData.remove(address);
 		}
+		
+		Message msg = mHandler.obtainMessage(MESSAGE_DISCONNECT_DEVICE);
+		Bundle bundle = new Bundle();
+        bundle.putString("DEVICE_ADDRESS", address);
+        msg.setData(bundle);
+        mHandler.sendMessage(msg);
 	}
 	
 	public void write(String address, byte[] output) {
@@ -147,8 +166,9 @@ public class BtAdapter {
 		if (target == null) {
 			return;
 		} 
-		
+
 		target.write(output);
+		Log.i(TAG, "message sent");
 	}
 	
 	
@@ -221,7 +241,7 @@ public class BtAdapter {
 			STATE_CONNECTED = true;
 		}
 		String address = device.getAddress();
-		connectionData.put(address, new ConnectedThread(socket));
+		connectionData.put(address, new ConnectedThread(device, socket));
 		connectionData.get(address).start();
 	}
 	
@@ -250,6 +270,7 @@ public class BtAdapter {
 		
 		public void run() {
 			BluetoothSocket socket = null;
+			BluetoothDevice device = null;
 			
 			while (true) {
 				try {
@@ -258,11 +279,32 @@ public class BtAdapter {
 					break;
 				}
 				
-				if (socket != null) {
-					// something for managing the connection
-					//manageConnectedSocket(socket);
-					cancel();
-					break;
+				if (socket != null) {		
+					
+					synchronized (BtAdapter.this) {
+						//	if multiconnectionmode is disabled and there is already a connection drop it, otherwise fine
+						if (!multiConnectionMode && STATE_CONNECTED) {
+							try {
+								socket.close();
+							} catch (IOException e) {
+								Log.e(TAG, "failed to close unwanted socket", e);
+							}
+							return;
+						}
+						
+						device = socket.getRemoteDevice();
+						
+						Message msg = mHandler.obtainMessage(MESSAGE_CONNECTED_DEVICE);
+						Bundle bundle = new Bundle();
+						bundle.putString("DEVICE_NAME", device.getName());
+				        bundle.putString("DEVICE_ADDRESS", device.getAddress());
+				        bundle.putInt("DIRECTION", 0);
+				        msg.setData(bundle);
+				        mHandler.sendMessage(msg);
+						
+						connected(socket, device);
+					}
+
 				}
 			}
 		}
@@ -310,6 +352,13 @@ public class BtAdapter {
 				mConnectThread = null;
 			}
 			
+			Message msg = mHandler.obtainMessage(MESSAGE_CONNECTED_DEVICE);
+			Bundle bundle = new Bundle();
+			bundle.putString("DEVICE_NAME", mmDevice.getName());
+	        bundle.putString("DEVICE_ADDRESS", mmDevice.getAddress());
+	        bundle.putInt("DIRECTION", 1);
+	        msg.setData(bundle);
+	        mHandler.sendMessage(msg);
 			
 			connected(mmSocket, mmDevice);
 		}
@@ -327,7 +376,8 @@ public class BtAdapter {
 		private final InputStream mmInStream;
 		private final OutputStream mmOutStream;
 		
-		public ConnectedThread(BluetoothSocket socket) {
+		public ConnectedThread(BluetoothDevice device, BluetoothSocket socket) {
+			mmDevice = device;
 			mmSocket = socket;
 			InputStream tmpIn = null;
 			OutputStream tmpOut = null;
@@ -336,8 +386,7 @@ public class BtAdapter {
 				tmpIn = socket.getInputStream();
 				tmpOut = socket.getOutputStream();
 			} catch (IOException e) { }
-			
-			mmDevice = mmSocket.getRemoteDevice();
+						
 			mmInStream = tmpIn;
 			mmOutStream = tmpOut;
 		}
@@ -345,17 +394,32 @@ public class BtAdapter {
 		public void run() {
 			byte[] buffer = new byte[1024];
 			int bytes;
-			String address = mmDevice.getAddress();
 			Log.i(TAG, "listening on socket");
 			
-			write(address.getBytes());
+			//	arbitrary on connect message sent to the other party
+			//	will probably be removed later as this is mostly for testing communications to the HC-06
+			//	protocol is currently as such
+			//	each character/byte is read individually
+			//	c	connect
+			//	d	disconnect
+			//	p 	package - all bytes following p are considered to be the content of the message
+			String address = mBluetoothAdapter.getAddress();
+			String sendConn = "cp" + address + "\n";
+			write(sendConn.getBytes());
 			
 			while (true) {
 				try {
+					Log.i(TAG, "message received");
 					bytes = mmInStream.read(buffer);
 					//	send messages back to the UI thread
-					mHandler.obtainMessage(1, bytes, -1, buffer).sendToTarget();
+					Message msg = mHandler.obtainMessage(MESSAGE_RECEIVE_DATA);
+					Bundle bundle = new Bundle();
+			        bundle.putString("DEVICE_ADDRESS", mmDevice.getAddress());
+			        bundle.putString("MESSAGE", new String(buffer, 0, bytes));
+			        msg.setData(bundle);
+			        mHandler.sendMessage(msg);
 				} catch (IOException e) {
+					Log.i(TAG, "connection lost");
 					break;
 				}
 			}
