@@ -22,7 +22,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-//	revision 0005
+//	revision 0006
 
 package net.bitcores.bluetoothtest;
 
@@ -91,6 +91,7 @@ public class BtAdapter {
 	public static final int MESSAGE_CONNECTED_DEVICE = 1;
 	public static final int MESSAGE_RECEIVE_DATA = 2;
 	public static final int MESSAGE_DISCONNECT_DEVICE = 3;
+	public static final int MESSAGE_CONNECTION_LOST = 4;
 	
 	public BtAdapter() {
 		
@@ -147,29 +148,65 @@ public class BtAdapter {
 		
 	public void disconnectDevice(String address) {	
 		Log.i(TAG, "do disconnect");
+		
 		//	if address is null all devices will be disconnected including devices in the process of being connected
 		//	otherwise the address will be checked in the endconnect/endconnected methods
 		disconnect(address);
-
 	}
 	
-	public void write(String address, byte[] output) {
-		ConnectedThread target;
-
-		synchronized (BtAdapter.this) {
-			target = connectedThreads.get(address);
+	//	return a hashmap containing a list of devices currently connected
+	//	i do not think a method for connecting devices will be necessary
+	public HashMap<String, String> connectedDevices() {
+		HashMap<String, String> mConnectedDevices = new HashMap<String, String>();
+		String[] keys = connectedThreads.keySet().toArray(new String[connectedThreads.size()]);
+		for (String mAddress : keys) {
+			ConnectedThread thread = connectedThreads.get(mAddress);
+			String device = thread.mmDevice.getName();
+			mConnectedDevices.put(mAddress, device);
 		}
-		if (target == null) {
-			return;
-		} 
+		
+		return mConnectedDevices;
+	}
+	
+	//	sending no address will allow you to send the output to all connected devices
+	//	when not in multiconnectionmode this could be used instead of the address as there should be only one
+	//	connected device anyway but it would be better practice to specify your target
+	public void write(byte[] output) {
+		String[] keys = connectedThreads.keySet().toArray(new String[connectedThreads.size()]);
+		for (String address : keys) {
+			ConnectedThread target;
 
-		target.write(output);
-		Log.i(TAG, "message sent");
+			synchronized (BtAdapter.this) {
+				target = connectedThreads.get(address);
+			}
+			if (target == null) {
+				return;
+			} 
+			
+			target.write(output);
+			Log.i(TAG, "message sent");
+		}
+	}
+	public void write(String address, byte[] output) {
+		if (address != null) {
+			ConnectedThread target;
+
+			synchronized (BtAdapter.this) {
+				target = connectedThreads.get(address);
+			}
+			if (target == null) {
+				return;
+			} 
+			
+			target.write(output);
+			Log.i(TAG, "message sent");
+		} 
 	}
 	
 	
 	//	these could potentially be left unsynchronized so long as they are only called from within synchronized methods
 	//	but they are called fairly often, as you see below, and may need to be called individually in the future
+	//	rather than sending null, sending no address will call the methods to remove all threads
 	private synchronized void endAcceptThread() {
 		if (mAcceptThread != null) {
 			mAcceptThread.cancel();
@@ -177,74 +214,63 @@ public class BtAdapter {
 		}
 		STATE_LISTENING = false;
 	}
-	//	sending address to these methods makes more sense than sending the connectthread/connectedthread
-	private synchronized void endConnectThread(String address) {
-		class local {
-			public void removeConnectThread(String address) {
-				ConnectThread thread = connectThreads.get(address);
-				if (thread != null) {
-					thread.cancel();
-					connectThreads.remove(address);
-				}
-			}
+	private synchronized void removeConnectThread(String address) {
+		ConnectThread thread = connectThreads.get(address);
+		if (thread != null) {
+			thread.cancel();
+			connectThreads.remove(address);
 		}
-		
-		local rct = new local();
-		if (address == null) {
-			String[] keys = connectThreads.keySet().toArray(new String[connectThreads.size()]);
-			for (String mAddress : keys) {
-				rct.removeConnectThread(mAddress);
-			}
-		} else {
-			rct.removeConnectThread(address);
-		}	
+	}
+	private synchronized void endConnectThread() {
+		String[] keys = connectThreads.keySet().toArray(new String[connectThreads.size()]);
+		for (String address : keys) {
+			removeConnectThread(address);
+		}
 		STATE_CONNECTING = false;
-	}	
-	private synchronized void endConnectedThread(String address) {
-		class local {
-			public void removeConnectedThread(String address) {
-				ConnectedThread thread = connectedThreads.get(address);
-				if (thread != null) {
-					String sendDisconn = "d\n";
-					write(address, sendDisconn.getBytes());
-					
-					thread.cancel();
-					connectedThreads.remove(address);
-					
-					Message msg = mHandler.obtainMessage(MESSAGE_DISCONNECT_DEVICE);
-					Bundle bundle = new Bundle();
-					bundle.putString("DEVICE_ADDRESS", address);
-					msg.setData(bundle);
-					mHandler.sendMessage(msg);
-				}	    
-			}
+	}
+	private synchronized void endConnectThread(String address) {
+		if (address != null) {
+			removeConnectThread(address);
+			STATE_CONNECTING = false;
 		}
-		
-		local rct = new local();
-		if (address == null) {
-			String[] keys = connectedThreads.keySet().toArray(new String[connectedThreads.size()]);
-			for (String mAddress : keys) {
-				rct.removeConnectedThread(mAddress);
-			}
-		} else {
-			rct.removeConnectedThread(address);
-		}	
-
+	}
+	private synchronized void removeConnectedThread(String address) {
+		ConnectedThread thread = connectedThreads.get(address);
+		if (thread != null) {
+			thread.cancel();
+			connectedThreads.remove(address);
+			
+			Message msg = mHandler.obtainMessage(MESSAGE_DISCONNECT_DEVICE);
+			Bundle bundle = new Bundle();
+			bundle.putString("DEVICE_ADDRESS", address);
+			msg.setData(bundle);
+			mHandler.sendMessage(msg);
+		}
+	}
+	private synchronized void endConnectedThread() {
+		String[] keys = connectedThreads.keySet().toArray(new String[connectedThreads.size()]);
+		for (String address : keys) {
+			removeConnectedThread(address);
+		}
 		STATE_CONNECTED = false;
 	}
+	private synchronized void endConnectedThread(String address) {
+		if (address == null) {
+			removeConnectedThread(address);	
+			STATE_CONNECTED = false;
+		}		
+	}
 	
-	private synchronized void accept() {
-		
+	private synchronized void accept() {	
 		if (!multiConnectionMode) {
 			endAcceptThread();
-			endConnectThread(null);
-			endConnectedThread(null);
+			endConnectThread();
+			endConnectedThread();
 			STATE_LISTENING = true;
 		}
 		
 		mAcceptThread = new AcceptThread();
-		mAcceptThread.start();
-		
+		mAcceptThread.start();	
 	}
 	
 	private synchronized void endAccept() {
@@ -253,8 +279,8 @@ public class BtAdapter {
 	
 	private synchronized void connect(BluetoothDevice device) {
 		if (!multiConnectionMode) {
-			endConnectThread(null);			
-			endConnectedThread(null);
+			endConnectThread();			
+			endConnectedThread();
 			STATE_CONNECTING = true;
 		}
 		
@@ -266,8 +292,8 @@ public class BtAdapter {
 	private synchronized void connected(BluetoothSocket socket, BluetoothDevice device) {	
 		if (!multiConnectionMode) {
 			endAcceptThread();	
-			endConnectThread(null);	
-			endConnectedThread(null);
+			endConnectThread();	
+			endConnectedThread();
 			STATE_CONNECTED = true;
 		}
 		String address = device.getAddress();
@@ -275,9 +301,13 @@ public class BtAdapter {
 		connectedThreads.get(address).start();
 	}
 	
-	private synchronized void disconnect(String address) {	
-		endConnectThread(address);	
-		endConnectedThread(address);
+	private synchronized void disconnect(String address) {
+		if (address == null) {
+			endConnectThread();	
+			endConnectedThread();
+		} else {
+			endConnectedThread(address);
+		}
 	}
 	
 	
@@ -375,8 +405,6 @@ public class BtAdapter {
 				return;
 			}
 			Log.i(TAG, "connected");
-			// socket management shit
-			//manageConnectedSocket(mmSocket);
 			
 			synchronized (BtAdapter.this) {
 				connectThreads.remove(address);
@@ -426,17 +454,6 @@ public class BtAdapter {
 			int bytes;
 			Log.i(TAG, "listening on socket");
 			
-			//	arbitrary on connect message sent to the other party
-			//	will probably be removed later as this is mostly for testing communications to the HC-06
-			//	protocol is currently as such
-			//	each character/byte is read individually
-			//	c	connect
-			//	d	disconnect
-			//	p 	package - all bytes following p are considered to be the content of the message
-			String address = mBluetoothAdapter.getAddress();
-			String sendConn = "cp" + address + "\n";
-			write(sendConn.getBytes());
-			
 			while (true) {
 				try {
 					Log.i(TAG, "message received");
@@ -451,6 +468,12 @@ public class BtAdapter {
 			        mHandler.sendMessage(msg);
 				} catch (IOException e) {
 					Log.i(TAG, "connection lost");
+					
+					Message msg = mHandler.obtainMessage(MESSAGE_CONNECTION_LOST);
+					Bundle bundle = new Bundle();
+					bundle.putString("DEVICE_ADDRESS", mmDevice.getAddress());
+			        msg.setData(bundle);
+			        mHandler.sendMessage(msg);
 					break;
 				}
 			}
