@@ -22,7 +22,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-//	revision 0008
+//	revision 0009
 
 package net.bitcores.bluetoothtest;
 
@@ -63,7 +63,13 @@ public class BleAdapter extends Service {
 	//	the reason i have decided to do it like this is that i dont have to use many if statements or a
 	//	switch in the discover devices which would need to be modified in every application to suit the
 	//	devices the application will connect to, instead the changes are just done here
+	//	service and characteristic names can be found on this website, last 4 hex digits of the first octet
+	//	https://developer.bluetooth.org/gatt/services/Pages/ServicesHome.aspx
+	//	you will see that the serial service here is not in the list, devices can implement custom services
+	//	and characteristics, the producer should document such services but it may be up to you to work out
+	//	what they are and what they offer
 	public static final String BGS_SERIALSERVICE = "Serial Service";
+	public static final String BGS_INFORMATION = "Information Service";
 	public static final String BGC_MODELNUMBER = "Model Number";
 	public static final String BGC_SERIALPORT0 = "Serial Port";
 	public static final String BGC_SERIALPORT1 = "Command Port";
@@ -74,6 +80,7 @@ public class BleAdapter extends Service {
 		acceptedServices = new HashMap<String, String>();
 		//put some services in here
 		acceptedServices.put("0000dfb0-0000-1000-8000-00805f9b34fb", BGS_SERIALSERVICE);
+		acceptedServices.put("0000180a-0000-1000-8000-00805f9b34fb", BGS_INFORMATION);
 		
 		acceptedCharacteristics = new HashMap<String, String>();
 		acceptedCharacteristics.put("00002a24-0000-1000-8000-00805f9b34fb", BGC_MODELNUMBER);
@@ -144,6 +151,20 @@ public class BleAdapter extends Service {
 		bgc = gattCharacteristics.get(address).get(service).get(characteristic);
 		
 		return bgc;
+	}
+	
+	//	unlike in classic BT where an open socket is maintained between the two devices so that data can be
+	//	sent anyway at any time in BLE it is pretty much up to the central device to decide when to read data
+	//	from the peripheral. so if you want to get new data on from a characteristic as it comes available you
+	//	set a notification on the characteristic which will then trigger the onCharacteristicChanged callback
+	//	which will probably work essentially the same as the onCharacteristicRead
+	public void setCharacteristicNotification(String address, BluetoothGattCharacteristic characteristic, boolean enabled) {
+		BluetoothGatt gatt = getGattConnection(address);
+		if (gatt != null) {
+			gatt.setCharacteristicNotification(characteristic, enabled);
+		} else {
+			
+		}
 	}
 	
 	public void connectDevice(String address) {		
@@ -246,7 +267,7 @@ public class BleAdapter extends Service {
 			
 			for (BluetoothGattService service : services) {
 				String suuid = service.getUuid().toString();
-				Log.i(TAG, "service found: " + suuid);
+				//Log.i(TAG, "service found: " + suuid);
 				
 				if (acceptedServices.containsKey(suuid) || acceptedServices.size() == 0) {
 				    characteristics = service.getCharacteristics();			
@@ -254,7 +275,7 @@ public class BleAdapter extends Service {
 				    bgcHashmap = new HashMap<String, BluetoothGattCharacteristic>();
 					for (BluetoothGattCharacteristic gattCharacteristic : characteristics) {
 						String cuuid = gattCharacteristic.getUuid().toString();
-						Log.i(TAG, "characteristic found: " + cuuid);
+						//Log.i(TAG, "characteristic found: " + cuuid);
 						
 						if (acceptedCharacteristics.containsKey(cuuid) || acceptedCharacteristics.size() == 0) {
 							bgcHashmap.put(acceptedCharacteristics.get(cuuid) == null ? cuuid : acceptedCharacteristics.get(cuuid), gattCharacteristic);
@@ -286,6 +307,13 @@ public class BleAdapter extends Service {
 		@Override
 		public void onCharacteristicRead(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic, int status) {
 			BluetoothDevice device = gatt.getDevice();
+			byte[] value = characteristic.getValue();
+			
+			Message msg = mHandler.obtainMessage(Constants.MESSAGE_RECEIVE_DATA, value.length, -1, value);
+			Bundle bundle = new Bundle();
+			bundle.putString("DEVICE_ADDRESS", device.getAddress());
+			msg.setData(bundle);
+			mHandler.sendMessage(msg);
 		}
 		
 		@Override
@@ -296,6 +324,13 @@ public class BleAdapter extends Service {
 		@Override
 		public void onCharacteristicChanged(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic) {
 			BluetoothDevice device = gatt.getDevice();
+			byte[] value = characteristic.getValue();
+			
+			Message msg = mHandler.obtainMessage(Constants.MESSAGE_RECEIVE_DATA, value.length, -1, value);
+			Bundle bundle = new Bundle();
+			bundle.putString("DEVICE_ADDRESS", device.getAddress());
+			msg.setData(bundle);
+			mHandler.sendMessage(msg);
 		}
 	};
 	
