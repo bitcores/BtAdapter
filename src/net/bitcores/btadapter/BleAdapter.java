@@ -22,9 +22,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-//	revision 0009
+//	revision 0010
 
-package net.bitcores.bluetoothtest;
+package net.bitcores.btadapter;
 
 import java.util.HashMap;
 import java.util.List;
@@ -91,7 +91,7 @@ public class BleAdapter extends Service {
 	private Context mContext;
 	private Handler mHandler;
 	
-	static final String TAG = "bluetoothtestble";
+	static final String TAG = "bluetooth bleadapter";
 	
 	public BleAdapter() {
 		
@@ -102,17 +102,17 @@ public class BleAdapter extends Service {
 		mContext = context;
 		mHandler = handler;
 		
-		if (Constants.mBluetoothAdapter == null) {
-			Constants.mBluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
+		if (BtCommon.mBluetoothAdapter == null) {
+			BtCommon.mBluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
 			
-			if (Constants.mBluetoothAdapter == null) {
+			if (BtCommon.mBluetoothAdapter == null) {
 				return false;
 			}
 
 		}
 		
 		return true;
-	}
+	} 
 	
 	public void endBle() {
 		
@@ -158,10 +158,32 @@ public class BleAdapter extends Service {
 	//	from the peripheral. so if you want to get new data on from a characteristic as it comes available you
 	//	set a notification on the characteristic which will then trigger the onCharacteristicChanged callback
 	//	which will probably work essentially the same as the onCharacteristicRead
-	public void setCharacteristicNotification(String address, BluetoothGattCharacteristic characteristic, boolean enabled) {
+	public void setCharacteristicNotification(String address, String service, String characteristic, boolean enabled) {
 		BluetoothGatt gatt = getGattConnection(address);
+		BluetoothGattCharacteristic mCharacteristic = getCharacteristic(address, service, characteristic);
 		if (gatt != null) {
-			gatt.setCharacteristicNotification(characteristic, enabled);
+			gatt.setCharacteristicNotification(mCharacteristic, enabled);
+		} else {
+			
+		}
+	}
+	
+	public void writeCharacteristic(String address, String service, String characteristic, byte[] bytes) {
+		BluetoothGatt gatt = getGattConnection(address);
+		BluetoothGattCharacteristic mCharacteristic = getCharacteristic(address, service, characteristic);
+		mCharacteristic.setValue(bytes);
+		if (gatt != null) {
+			write(gatt, mCharacteristic);
+		} else {
+			
+		}
+	}
+	
+	public void readCharacteristic(String address, String service, String characteristic) {
+		BluetoothGatt gatt = getGattConnection(address);
+		BluetoothGattCharacteristic mCharacteristic = getCharacteristic(address, service, characteristic);
+		if (gatt != null) {
+			read(gatt, mCharacteristic);
 		} else {
 			
 		}
@@ -170,7 +192,7 @@ public class BleAdapter extends Service {
 	public void connectDevice(String address) {		
 		Log.i(TAG, "connecting to '" + address + "'");
 		
-		BluetoothDevice device = Constants.mBluetoothAdapter.getRemoteDevice(address);
+		BluetoothDevice device = BtCommon.mBluetoothAdapter.getRemoteDevice(address);
 		connect(device);
 	}
 
@@ -196,8 +218,7 @@ public class BleAdapter extends Service {
 		removeGattConnection(address);
 	}
 	
-	public void read(String address, BluetoothGattCharacteristic characteristic) {
-		BluetoothGatt gatt = getGattConnection(address);
+	private void read(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic) {
 		if (gatt != null) {
 			gatt.readCharacteristic(characteristic);
 		} else {
@@ -205,8 +226,7 @@ public class BleAdapter extends Service {
 		}
 	}
 	
-	public void write(String address, BluetoothGattCharacteristic characteristic) {
-		BluetoothGatt gatt = getGattConnection(address);
+	private void write(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic) {
 		if (gatt != null) {
 			gatt.writeCharacteristic(characteristic);
 		} else {
@@ -226,7 +246,7 @@ public class BleAdapter extends Service {
 				if (newState == BluetoothProfile.STATE_CONNECTED) {
 					Log.i(TAG, "gatt connected");
 
-					Message msg = mHandler.obtainMessage(Constants.MESSAGE_CONNECTED_DEVICE);
+					Message msg = mHandler.obtainMessage(BtCommon.MESSAGE_CONNECTED_DEVICE);
 					Bundle bundle = new Bundle();
 					bundle.putString("DEVICE_NAME", device.getName());
 					bundle.putString("DEVICE_ADDRESS", address);
@@ -241,7 +261,7 @@ public class BleAdapter extends Service {
 				} else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
 					Log.i(TAG, "gatt disconnected");
 					
-					Message msg = mHandler.obtainMessage(Constants.MESSAGE_DISCONNECT_DEVICE);
+					Message msg = mHandler.obtainMessage(BtCommon.MESSAGE_DISCONNECT_DEVICE);
 					Bundle bundle = new Bundle();
 					bundle.putString("DEVICE_ADDRESS", address);
 					msg.setData(bundle);
@@ -287,7 +307,7 @@ public class BleAdapter extends Service {
 			}		
 			gattCharacteristics.put(device.getAddress(), bgsHashmap);
 			
-			Message msg = mHandler.obtainMessage(Constants.MESSAGE_SERVICES_DISCOVERED);
+			Message msg = mHandler.obtainMessage(BtCommon.MESSAGE_SERVICES_DISCOVERED);
 			Bundle bundle = new Bundle();
 			bundle.putString("DEVICE_ADDRESS", device.getAddress());
 			msg.setData(bundle);
@@ -308,10 +328,12 @@ public class BleAdapter extends Service {
 		public void onCharacteristicRead(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic, int status) {
 			BluetoothDevice device = gatt.getDevice();
 			byte[] value = characteristic.getValue();
+			String cuuid = characteristic.getUuid().toString();
 			
-			Message msg = mHandler.obtainMessage(Constants.MESSAGE_RECEIVE_DATA, value.length, -1, value);
+			Message msg = mHandler.obtainMessage(BtCommon.MESSAGE_RECEIVE_DATA, value.length, -1, value);
 			Bundle bundle = new Bundle();
 			bundle.putString("DEVICE_ADDRESS", device.getAddress());
+			bundle.putString("CHARACTERISTIC_UUID", cuuid);
 			msg.setData(bundle);
 			mHandler.sendMessage(msg);
 		}
@@ -325,10 +347,12 @@ public class BleAdapter extends Service {
 		public void onCharacteristicChanged(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic) {
 			BluetoothDevice device = gatt.getDevice();
 			byte[] value = characteristic.getValue();
+			String cuuid = characteristic.getUuid().toString();
 			
-			Message msg = mHandler.obtainMessage(Constants.MESSAGE_RECEIVE_DATA, value.length, -1, value);
+			Message msg = mHandler.obtainMessage(BtCommon.MESSAGE_RECEIVE_DATA, value.length, -1, value);
 			Bundle bundle = new Bundle();
 			bundle.putString("DEVICE_ADDRESS", device.getAddress());
+			bundle.putString("CHARACTERISTIC_UUID", cuuid);
 			msg.setData(bundle);
 			mHandler.sendMessage(msg);
 		}

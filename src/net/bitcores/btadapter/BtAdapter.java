@@ -22,9 +22,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-//	revision 0009
+//	revision 0010
 
-package net.bitcores.bluetoothtest;
+package net.bitcores.btadapter;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -72,7 +72,7 @@ public class BtAdapter {
 	//	i dont really know about this
 	static UUID MY_UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB");
 	
-	static final String TAG = "bluetoothtest";
+	static final String TAG = "bluetooth btadapter";
 	
 	
 	//	putting this in here just for now, means that if the device you are connecting to
@@ -91,10 +91,10 @@ public class BtAdapter {
 	}
 	
 	public boolean initBt(Context context, Handler handler, Boolean mode) {
-		if (Constants.mBluetoothAdapter == null) {
-			Constants.mBluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
+		if (BtCommon.mBluetoothAdapter == null) {
+			BtCommon.mBluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
 			
-			if (Constants.mBluetoothAdapter == null) {
+			if (BtCommon.mBluetoothAdapter == null) {
 				return false;
 			}
 			
@@ -108,7 +108,7 @@ public class BtAdapter {
 	}
 	
 	public void endBt() {
-		Constants.mBluetoothAdapter = null;
+		BtCommon.mBluetoothAdapter = null;
 		endAccept();
 		disconnect(null);
 		resetStates();
@@ -137,7 +137,7 @@ public class BtAdapter {
 	public void connectDevice(String address) {		
 		Log.i(TAG, "connecting to '" + address + "'");
 		
-		BluetoothDevice device = Constants.mBluetoothAdapter.getRemoteDevice(address);
+		BluetoothDevice device = BtCommon.mBluetoothAdapter.getRemoteDevice(address);
 		connect(device);
 	}
 		
@@ -235,7 +235,7 @@ public class BtAdapter {
 			thread.cancel();
 			connectedThreads.remove(address);
 			
-			Message msg = mHandler.obtainMessage(Constants.MESSAGE_DISCONNECT_DEVICE);
+			Message msg = mHandler.obtainMessage(BtCommon.MESSAGE_DISCONNECT_DEVICE);
 			Bundle bundle = new Bundle();
 			bundle.putString("DEVICE_ADDRESS", address);
 			msg.setData(bundle);
@@ -315,7 +315,7 @@ public class BtAdapter {
 		public AcceptThread() {
 			BluetoothServerSocket tmp = null;
 			try {
-				tmp = Constants.mBluetoothAdapter.listenUsingRfcommWithServiceRecord(NAME, MY_UUID);
+				tmp = BtCommon.mBluetoothAdapter.listenUsingRfcommWithServiceRecord(NAME, MY_UUID);
 			} catch (IOException e) { }
 			mmServerSocket = tmp;
 		}
@@ -346,7 +346,7 @@ public class BtAdapter {
 						
 						device = socket.getRemoteDevice();
 						
-						Message msg = mHandler.obtainMessage(Constants.MESSAGE_CONNECTED_DEVICE);
+						Message msg = mHandler.obtainMessage(BtCommon.MESSAGE_CONNECTED_DEVICE);
 						Bundle bundle = new Bundle();
 						bundle.putString("DEVICE_NAME", device.getName());
 						bundle.putString("DEVICE_ADDRESS", device.getAddress());
@@ -393,7 +393,7 @@ public class BtAdapter {
 		}
 		
 		public void run() {
-			Constants.mBluetoothAdapter.cancelDiscovery();
+			BtCommon.mBluetoothAdapter.cancelDiscovery();
 			
 			Log.i(TAG, "starting connection");
 			
@@ -410,7 +410,7 @@ public class BtAdapter {
 				connectThreads.remove(address);
 			}
 			
-			Message msg = mHandler.obtainMessage(Constants.MESSAGE_CONNECTED_DEVICE);
+			Message msg = mHandler.obtainMessage(BtCommon.MESSAGE_CONNECTED_DEVICE);
 			Bundle bundle = new Bundle();
 			bundle.putString("DEVICE_NAME", mmDevice.getName());
 			bundle.putString("DEVICE_ADDRESS", mmDevice.getAddress());
@@ -461,7 +461,7 @@ public class BtAdapter {
 					Log.i(TAG, "message received");
 					bytes = mmInStream.read(buffer);
 					
-					Message msg = mHandler.obtainMessage(Constants.MESSAGE_RECEIVE_DATA, bytes, -1, buffer);
+					Message msg = mHandler.obtainMessage(BtCommon.MESSAGE_RECEIVE_DATA, bytes, -1, buffer);
 					Bundle bundle = new Bundle();
 					bundle.putString("DEVICE_ADDRESS", mmDevice.getAddress());
 					msg.setData(bundle);
@@ -469,7 +469,7 @@ public class BtAdapter {
 				} catch (IOException e) {
 					Log.i(TAG, "connection lost");
 					
-					Message msg = mHandler.obtainMessage(Constants.MESSAGE_CONNECTION_LOST);
+					Message msg = mHandler.obtainMessage(BtCommon.MESSAGE_CONNECTION_LOST);
 					Bundle bundle = new Bundle();
 					bundle.putString("DEVICE_ADDRESS", mmDevice.getAddress());
 					msg.setData(bundle);
