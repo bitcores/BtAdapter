@@ -1,8 +1,13 @@
+//	revision 0011
 package net.bitcores.btadapter;
 
 import android.bluetooth.BluetoothAdapter;
 
 public class BtCommon {
+	
+	public BtCommon() {
+		
+	}
 	
 	//	because of the number of non-blocking calls available from the bluetooth adapter
 	//	we may want it available in the UI thread, so lets make this public so it can be
@@ -18,5 +23,5 @@ public class BtCommon {
 	public static final int MESSAGE_DISCONNECT_DEVICE = 3;
 	public static final int MESSAGE_CONNECTION_LOST = 4;
 	public static final int MESSAGE_SERVICES_DISCOVERED = 5;
-
+	
 }

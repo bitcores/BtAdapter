@@ -22,7 +22,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-//	revision 0010
+//	revision 0011
 
 package net.bitcores.btadapter;
 
@@ -90,19 +90,20 @@ public class BtAdapter {
 		
 	}
 	
-	public boolean initBt(Context context, Handler handler, Boolean mode) {
+	public boolean initBt(Context context, Handler handler, Boolean mode) {	
+		mContext = context;
+		mHandler = handler;
+		
 		if (BtCommon.mBluetoothAdapter == null) {
 			BtCommon.mBluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
-			
-			if (BtCommon.mBluetoothAdapter == null) {
-				return false;
-			}
-			
-			resetStates();
-			mContext = context;
-			mHandler = handler;
-			multiConnectionMode = mode;
 		}
+		
+		if (BtCommon.mBluetoothAdapter == null) {
+			return false;
+		}
+		
+		resetStates();
+		multiConnectionMode = mode;
 		
 		return true;
 	}

@@ -22,20 +22,22 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-//	revision 0010
+//	revision 0011
 
 package net.bitcores.btadapter;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import android.app.Service;
-import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothGatt;
 import android.bluetooth.BluetoothGattCallback;
 import android.bluetooth.BluetoothGattCharacteristic;
 import android.bluetooth.BluetoothGattService;
+import android.bluetooth.BluetoothManager;
 import android.bluetooth.BluetoothProfile;
 import android.content.Context;
 import android.content.Intent;
@@ -46,6 +48,9 @@ import android.os.Message;
 import android.util.Log;
 
 public class BleAdapter extends Service {
+	private BluetoothManager mBluetoothManager;
+	private WriteThread mWriteThread;
+	
 	//	once again i want a hashmap so that i can handle multiple gatt threads at once if allowed
 	//	under the multi connection mode. these will be handled differently than other connections though
 	private HashMap<String, BluetoothGatt> gattConnections = new HashMap<String, BluetoothGatt>();
@@ -97,24 +102,30 @@ public class BleAdapter extends Service {
 		
 	}
 	
-	
+	//	this is the new way of getting the bluetooth adapter in api18+ which also gives us
+	//	the bluetoothmanager, because ble requires api18+ we can use it here
+	//	the old method that btadapter uses still works on api18+, so we can safely use both
+	//	bt and bleadapters without worrying for now, but this may change in the future
 	public boolean initBle(Context context, Handler handler, Boolean mode) {
 		mContext = context;
 		mHandler = handler;
 		
-		if (BtCommon.mBluetoothAdapter == null) {
-			BtCommon.mBluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
-			
-			if (BtCommon.mBluetoothAdapter == null) {
-				return false;
-			}
-
+		if (mBluetoothManager == null) {
+			mBluetoothManager = (BluetoothManager) context.getSystemService(Context.BLUETOOTH_SERVICE);
+			if (mBluetoothManager != null && BtCommon.mBluetoothAdapter == null) {
+				BtCommon.mBluetoothAdapter = mBluetoothManager.getAdapter();
+			}		
 		}
 		
+		if (BtCommon.mBluetoothAdapter == null) {
+			return false;
+		}
+					
 		return true;
 	} 
 	
 	public void endBle() {
+		mWriteThread.cancel();
 		
 	}
 	
@@ -143,6 +154,7 @@ public class BleAdapter extends Service {
 		if (gatt != null) {
 			gatt.close();
 			gattConnections.remove(address);
+			gattCharacteristics.remove(address);
 		}		
 	}
 	
@@ -173,7 +185,12 @@ public class BleAdapter extends Service {
 		BluetoothGattCharacteristic mCharacteristic = getCharacteristic(address, service, characteristic);
 		mCharacteristic.setValue(bytes);
 		if (gatt != null) {
-			write(gatt, mCharacteristic);
+			if (mWriteThread == null) {
+				mWriteThread = new WriteThread();
+				mWriteThread.start();				
+			}
+			
+			mWriteThread.bufferWrite(gatt, mCharacteristic);
 		} else {
 			
 		}
@@ -196,10 +213,7 @@ public class BleAdapter extends Service {
 		connect(device);
 	}
 
-	@Override
-	public IBinder onBind(Intent intent) {
-		return null;
-	}
+	
 	
 	
 	public void connect(BluetoothDevice device) {
@@ -224,15 +238,12 @@ public class BleAdapter extends Service {
 		} else {
 			
 		}
-	}
-	
-	private void write(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic) {
-		if (gatt != null) {
-			gatt.writeCharacteristic(characteristic);
-		} else {
-			
-		}
 	}	
+	
+	@Override
+	public IBinder onBind(Intent intent) {
+		return null;
+	}
 	
 	
 	//	callback for the gatt connections
@@ -341,6 +352,13 @@ public class BleAdapter extends Service {
 		@Override
 		public void onCharacteristicWrite(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic, int status) {
 			BluetoothDevice device = gatt.getDevice();
+			if (status == BluetoothGatt.GATT_SUCCESS) {
+				if (mWriteThread != null) {
+					mWriteThread.bufferUnlock(gatt);
+				} else {
+					//	TODO something terrible has happened
+				}
+			}
 		}
 		
 		@Override
@@ -358,4 +376,82 @@ public class BleAdapter extends Service {
 		}
 	};
 	
+	//	because it will be possible to maintain multiple gatt connections at once and the
+	//	nature of gatt writes is fairly slow and you mustnt overload a device with writes
+	//	i will try implementing a thread to manage writes
+	private class WriteThread extends Thread {
+		private HashMap<BluetoothGatt, List<BluetoothGattCharacteristic>> characteristicWriteBuffer = new HashMap<BluetoothGatt, List<BluetoothGattCharacteristic>>();
+		private HashMap<BluetoothGatt, Boolean> characteristicWriteLock = new HashMap<BluetoothGatt, Boolean>();
+		
+		public void run() {
+			Log.i(TAG, "writethread started");
+			
+			while (true) {
+				for (Map.Entry<BluetoothGatt, Boolean> entry : characteristicWriteLock.entrySet()) {
+					//	if the value is false, meaning gatt is unlocked
+					if (!entry.getValue()) {
+						BluetoothGatt gatt = entry.getKey();
+						
+						List<BluetoothGattCharacteristic> writeBuffer = characteristicWriteBuffer.get(gatt);
+						if (writeBuffer.size() > 0) {
+							BluetoothGattCharacteristic characteristic = writeBuffer.get(0);					
+							characteristicWriteLock.put(gatt, true);
+							
+							gatt.writeCharacteristic(characteristic);
+							
+							writeBuffer.remove(0);
+							if (writeBuffer.size() < 1) {
+								characteristicWriteLock.remove(gatt);
+							}
+						}
+						
+					}
+				}
+				
+				if (characteristicWriteLock.size() < 1) {
+					cancel();		
+					break;
+				}
+				
+				try {
+					Thread.sleep(100);
+				} catch (InterruptedException e) {
+					// TODO Auto-generated catch block
+					e.printStackTrace();
+				}
+			}
+		}
+		
+		//	im not sure if i need to clear values and such or just null the thread
+		//	but for now this will work
+		public void cancel() {
+			Log.i(TAG, "writethread stopped");
+			characteristicWriteBuffer.clear();
+			characteristicWriteLock.clear();
+			
+			synchronized (BleAdapter.this) {
+				mWriteThread = null;
+			}
+		}
+		
+		public void bufferWrite(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic) {
+			if (characteristicWriteBuffer.containsKey(gatt)) {
+				characteristicWriteBuffer.get(gatt).add(characteristic);
+			} else {
+				List<BluetoothGattCharacteristic> tmpList = new ArrayList<BluetoothGattCharacteristic>();
+				tmpList.add(characteristic);
+				characteristicWriteBuffer.put(gatt, tmpList);
+			}
+			
+			//	each gatt needs to be in the writelock list because we will iterate that
+			//	to check if they are ready for writing
+			if (!characteristicWriteLock.containsKey(gatt)) {
+				characteristicWriteLock.put(gatt, false);
+			}
+		}
+		
+		public void bufferUnlock(BluetoothGatt gatt) {
+			characteristicWriteLock.put(gatt, false);
+		}
+	}
 }
