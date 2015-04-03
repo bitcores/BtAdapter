@@ -22,14 +22,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-//	revision 0011
+//	revision 0012
 
 package net.bitcores.btadapter;
 
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
 import android.app.Service;
 import android.bluetooth.BluetoothDevice;
@@ -49,7 +48,7 @@ import android.util.Log;
 
 public class BleAdapter extends Service {
 	private BluetoothManager mBluetoothManager;
-	private WriteThread mWriteThread;
+	private WriteManager mWriteManager;
 	
 	//	once again i want a hashmap so that i can handle multiple gatt threads at once if allowed
 	//	under the multi connection mode. these will be handled differently than other connections though
@@ -62,37 +61,13 @@ public class BleAdapter extends Service {
 	//	TODO test
 	private HashMap<String, HashMap<String, HashMap<String, BluetoothGattCharacteristic>>> gattCharacteristics = new HashMap<String, HashMap<String, HashMap<String, BluetoothGattCharacteristic>>>();
 	
-	//	the integers below correspond to the index in this string list of each characistic uuid and so if
-	//	i want to talk to serialport0 on a device i can sent the mac address and BGC_SERIALPORT0 to
-	//	retrieve the characteristic from the hashmap
-	//	the reason i have decided to do it like this is that i dont have to use many if statements or a
-	//	switch in the discover devices which would need to be modified in every application to suit the
-	//	devices the application will connect to, instead the changes are just done here
-	//	service and characteristic names can be found on this website, last 4 hex digits of the first octet
-	//	https://developer.bluetooth.org/gatt/services/Pages/ServicesHome.aspx
-	//	you will see that the serial service here is not in the list, devices can implement custom services
-	//	and characteristics, the producer should document such services but it may be up to you to work out
-	//	what they are and what they offer
-	public static final String BGS_SERIALSERVICE = "Serial Service";
-	public static final String BGS_INFORMATION = "Information Service";
-	public static final String BGC_MODELNUMBER = "Model Number";
-	public static final String BGC_SERIALPORT0 = "Serial Port";
-	public static final String BGC_SERIALPORT1 = "Command Port";
 	
-	private static final HashMap<String, String> acceptedServices;
-	private static final HashMap<String, String> acceptedCharacteristics;
-	static {
-		acceptedServices = new HashMap<String, String>();
-		//put some services in here
-		acceptedServices.put("0000dfb0-0000-1000-8000-00805f9b34fb", BGS_SERIALSERVICE);
-		acceptedServices.put("0000180a-0000-1000-8000-00805f9b34fb", BGS_INFORMATION);
-		
-		acceptedCharacteristics = new HashMap<String, String>();
-		acceptedCharacteristics.put("00002a24-0000-1000-8000-00805f9b34fb", BGC_MODELNUMBER);
-		acceptedCharacteristics.put("0000dfb1-0000-1000-8000-00805f9b34fb", BGC_SERIALPORT0);
-		acceptedCharacteristics.put("0000dfb2-0000-1000-8000-00805f9b34fb", BGC_SERIALPORT1);
-	}
-	
+	//	instead of filling these in this adapter they are now filled with hashmaps at the moment the
+	//	adapter is initialized in initBle. if nothing is put in them all services/characteristics
+	//	are accepted
+	private static HashMap<String, String> acceptedServices;
+	private static HashMap<String, String> acceptedCharacteristics;
+
 	private Context mContext;
 	private Handler mHandler;
 	
@@ -106,7 +81,8 @@ public class BleAdapter extends Service {
 	//	the bluetoothmanager, because ble requires api18+ we can use it here
 	//	the old method that btadapter uses still works on api18+, so we can safely use both
 	//	bt and bleadapters without worrying for now, but this may change in the future
-	public boolean initBle(Context context, Handler handler, Boolean mode) {
+	// TODO can i put an api warning here that will show up when initBle is evoked?
+	public boolean initBle(Context context, Handler handler, Boolean mode, HashMap<String, String> services, HashMap<String, String> characteristics) {
 		mContext = context;
 		mHandler = handler;
 		
@@ -120,13 +96,25 @@ public class BleAdapter extends Service {
 		if (BtCommon.mBluetoothAdapter == null) {
 			return false;
 		}
+		
+		if (mWriteManager == null) {
+			mWriteManager = new WriteManager();
+		}
+		
+		if (services != null) {
+			acceptedServices.putAll(services);
+		}
+		if (characteristics != null) {
+			acceptedCharacteristics.putAll(characteristics);
+		}
 					
 		return true;
 	} 
 	
 	public void endBle() {
-		mWriteThread.cancel();
-		
+		mWriteManager.cancel();
+		acceptedServices.clear();
+		acceptedCharacteristics.clear();
 	}
 	
 	
@@ -155,6 +143,10 @@ public class BleAdapter extends Service {
 			gatt.close();
 			gattConnections.remove(address);
 			gattCharacteristics.remove(address);
+			
+			if (mWriteManager != null) {
+				mWriteManager.cleanBuffers(gatt);
+			}
 		}		
 	}
 	
@@ -185,15 +177,18 @@ public class BleAdapter extends Service {
 		BluetoothGattCharacteristic mCharacteristic = getCharacteristic(address, service, characteristic);
 		mCharacteristic.setValue(bytes);
 		if (gatt != null) {
-			if (mWriteThread == null) {
-				mWriteThread = new WriteThread();
-				mWriteThread.start();				
-			}
-			
-			mWriteThread.bufferWrite(gatt, mCharacteristic);
+			if (mWriteManager == null) {
+				// TODO something	
+			} else {
+				mWriteManager.bufferWrite(gatt, mCharacteristic);
+			}		
 		} else {
 			
 		}
+	}
+	
+	public void write (BluetoothGatt gatt, BluetoothGattCharacteristic characteristic) {
+		gatt.writeCharacteristic(characteristic);
 	}
 	
 	public void readCharacteristic(String address, String service, String characteristic) {
@@ -353,8 +348,8 @@ public class BleAdapter extends Service {
 		public void onCharacteristicWrite(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic, int status) {
 			BluetoothDevice device = gatt.getDevice();
 			if (status == BluetoothGatt.GATT_SUCCESS) {
-				if (mWriteThread != null) {
-					mWriteThread.bufferUnlock(gatt);
+				if (mWriteManager != null) {
+					mWriteManager.bufferUnlock(gatt);
 				} else {
 					//	TODO something terrible has happened
 				}
@@ -374,66 +369,58 @@ public class BleAdapter extends Service {
 			msg.setData(bundle);
 			mHandler.sendMessage(msg);
 		}
+		
 	};
 	
+	//	thread removed
 	//	because it will be possible to maintain multiple gatt connections at once and the
 	//	nature of gatt writes is fairly slow and you mustnt overload a device with writes
-	//	i will try implementing a thread to manage writes
-	private class WriteThread extends Thread {
+	//	this class will manage the write operations
+	private class WriteManager {
 		private HashMap<BluetoothGatt, List<BluetoothGattCharacteristic>> characteristicWriteBuffer = new HashMap<BluetoothGatt, List<BluetoothGattCharacteristic>>();
 		private HashMap<BluetoothGatt, Boolean> characteristicWriteLock = new HashMap<BluetoothGatt, Boolean>();
+		private Integer bufferCount;
 		
-		public void run() {
-			Log.i(TAG, "writethread started");
+		public WriteManager() {
+
+		}
+		
+		public void queueWrite(BluetoothGatt gatt) {
+			bufferCount = 0;
 			
-			while (true) {
-				for (Map.Entry<BluetoothGatt, Boolean> entry : characteristicWriteLock.entrySet()) {
-					//	if the value is false, meaning gatt is unlocked
-					if (!entry.getValue()) {
-						BluetoothGatt gatt = entry.getKey();
-						
-						List<BluetoothGattCharacteristic> writeBuffer = characteristicWriteBuffer.get(gatt);
-						if (writeBuffer.size() > 0) {
-							BluetoothGattCharacteristic characteristic = writeBuffer.get(0);					
-							characteristicWriteLock.put(gatt, true);
-							
-							gatt.writeCharacteristic(characteristic);
-							
-							writeBuffer.remove(0);
-							if (writeBuffer.size() < 1) {
-								characteristicWriteLock.remove(gatt);
-							}
-						}
-						
+			List<BluetoothGattCharacteristic> writeBuffer = characteristicWriteBuffer.get(gatt);
+			
+			//	if the value is false, meaning the gatt is not locked
+			if (!characteristicWriteLock.get(gatt)) {
+				if (writeBuffer.size() > 0) {
+					BluetoothGattCharacteristic characteristic = writeBuffer.get(0);					
+					characteristicWriteLock.put(gatt, true);
+					
+					//gatt.writeCharacteristic(characteristic);
+					synchronized (BleAdapter.this) {
+						write(gatt, characteristic);
 					}
+					
+					writeBuffer.remove(0);										
 				}
 				
-				if (characteristicWriteLock.size() < 1) {
-					cancel();		
-					break;
-				}
-				
-				try {
-					Thread.sleep(100);
-				} catch (InterruptedException e) {
-					// TODO Auto-generated catch block
-					e.printStackTrace();
-				}
-			}
+			} 
+			
+			bufferCount += writeBuffer.size();					
 		}
 		
 		//	im not sure if i need to clear values and such or just null the thread
 		//	but for now this will work
 		public void cancel() {
-			Log.i(TAG, "writethread stopped");
 			characteristicWriteBuffer.clear();
 			characteristicWriteLock.clear();
 			
 			synchronized (BleAdapter.this) {
-				mWriteThread = null;
+				mWriteManager = null;
 			}
 		}
 		
+		//	buffer up write operations 
 		public void bufferWrite(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic) {
 			if (characteristicWriteBuffer.containsKey(gatt)) {
 				characteristicWriteBuffer.get(gatt).add(characteristic);
@@ -447,11 +434,24 @@ public class BleAdapter extends Service {
 			//	to check if they are ready for writing
 			if (!characteristicWriteLock.containsKey(gatt)) {
 				characteristicWriteLock.put(gatt, false);
+				queueWrite(gatt);
+			} else if (!characteristicWriteLock.get(gatt)) {
+				queueWrite(gatt);
 			}
 		}
 		
-		public void bufferUnlock(BluetoothGatt gatt) {
+		public synchronized void bufferUnlock(BluetoothGatt gatt) {
 			characteristicWriteLock.put(gatt, false);
+			queueWrite(gatt);
 		}
+		
+		//	call this when disconnecting a device to clear anything waiting to be written
+		public void cleanBuffers(BluetoothGatt gatt) {
+			characteristicWriteBuffer.remove(gatt);
+			characteristicWriteLock.remove(gatt);
+		}
+		
+		
+		
 	}
 }

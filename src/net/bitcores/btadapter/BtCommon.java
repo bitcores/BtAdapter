@@ -1,4 +1,4 @@
-//	revision 0011
+//	revision 0012
 package net.bitcores.btadapter;
 
 import android.bluetooth.BluetoothAdapter;
