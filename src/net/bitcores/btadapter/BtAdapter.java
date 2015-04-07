@@ -22,7 +22,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-//	revision 0012
+//	revision 0013
 
 package net.bitcores.btadapter;
 
