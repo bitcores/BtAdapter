@@ -22,7 +22,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-//	revision 0012
+//	revision 0013
 
 package net.bitcores.btadapter;
 
@@ -57,7 +57,8 @@ public class BleAdapter extends Service {
 	//	store the accepted characteristics for each connection in a hashmap which will be sent back to the
 	//	application when requested. the application should know what characteristics it wants to use
 	//	the characteristic list could potentially be kept after a disconnection and reused if the
-	//	device is connected to again without doing a discoverServices? 
+	//	device is connected to again without doing a discoverServices?
+	//	strings; address, service uuid, characteristic uuid
 	//	TODO test
 	private HashMap<String, HashMap<String, HashMap<String, BluetoothGattCharacteristic>>> gattCharacteristics = new HashMap<String, HashMap<String, HashMap<String, BluetoothGattCharacteristic>>>();
 	
@@ -65,8 +66,8 @@ public class BleAdapter extends Service {
 	//	instead of filling these in this adapter they are now filled with hashmaps at the moment the
 	//	adapter is initialized in initBle. if nothing is put in them all services/characteristics
 	//	are accepted
-	private static HashMap<String, String> acceptedServices;
-	private static HashMap<String, String> acceptedCharacteristics;
+	private static HashMap<String, String> acceptedServices = new HashMap<String, String>();
+	private static HashMap<String, String> acceptedCharacteristics = new HashMap<String, String>();
 
 	private Context mContext;
 	private Handler mHandler;
@@ -121,7 +122,14 @@ public class BleAdapter extends Service {
 	//	return gatt connection
 	public BluetoothGatt getGattConnection(String address) {
 		BluetoothGatt gatt = gattConnections.get(address);
+		
 		return gatt;
+	}
+	
+	public Integer getConnectionState(String address) {
+		BluetoothGatt gatt = gattConnections.get(address);
+		
+		return gatt.getConnectionState(gatt.getDevice());
 	}
 	
 	//	return a hashmap containing a list of ble devices currently connected
@@ -137,6 +145,19 @@ public class BleAdapter extends Service {
 		return mConnectedGatts;
 	}
 	
+	//	return lists of services and characteristics of the device
+	public List<String> getServiceList(String address) {
+		List<String> serviceList = new ArrayList<String>(gattCharacteristics.get(address).keySet());
+		
+		return serviceList;
+	}
+	
+	public List<String> getCharacteristicList(String address, String suuid) {
+		List<String> characteristicList = new ArrayList<String>(gattCharacteristics.get(address).get(suuid).keySet());
+		
+		return characteristicList;
+	}
+	
 	private void removeGattConnection(String address) {
 		BluetoothGatt gatt = getGattConnection(address);
 		if (gatt != null) {
@@ -147,6 +168,14 @@ public class BleAdapter extends Service {
 			if (mWriteManager != null) {
 				mWriteManager.cleanBuffers(gatt);
 			}
+			
+			Log.i(TAG, "disconnected gatt device");
+			
+			Message msg = mHandler.obtainMessage(BtCommon.MESSAGE_DISCONNECT_DEVICE);
+			Bundle bundle = new Bundle();
+			bundle.putString("DEVICE_ADDRESS", address);
+			msg.setData(bundle);
+			mHandler.sendMessage(msg);
 		}		
 	}
 	
@@ -187,7 +216,7 @@ public class BleAdapter extends Service {
 		}
 	}
 	
-	public void write (BluetoothGatt gatt, BluetoothGattCharacteristic characteristic) {
+	private void write(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic) {
 		gatt.writeCharacteristic(characteristic);
 	}
 	
@@ -208,22 +237,28 @@ public class BleAdapter extends Service {
 		connect(device);
 	}
 
+	public void disconnectDevice(String address) {
+		if (address == null) {
+			disconnect();
+		} else {
+			disconnect(address);
+		}
+	}
 	
 	
-	
-	public void connect(BluetoothDevice device) {
+	private void connect(BluetoothDevice device) {
 		BluetoothGatt gatt = device.connectGatt(mContext, false, mGattCallback);
 		String address = device.getAddress();
 		gattConnections.put(address, gatt);
 	}
 	
-	public void disconnect() {
+	private void disconnect() {
 		String[] keys = gattConnections.keySet().toArray(new String[gattConnections.size()]);
 		for (String address : keys) {
 			removeGattConnection(address);
 		}
 	}	
-	public void disconnect(String address) {		
+	private void disconnect(String address) {		
 		removeGattConnection(address);
 	}
 	
@@ -265,7 +300,7 @@ public class BleAdapter extends Service {
 					gattConnections.put(address, gatt);
 					
 				} else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-					Log.i(TAG, "gatt disconnected");
+					Log.i(TAG, "gatt device disconnected");
 					
 					Message msg = mHandler.obtainMessage(BtCommon.MESSAGE_DISCONNECT_DEVICE);
 					Bundle bundle = new Bundle();
@@ -293,9 +328,9 @@ public class BleAdapter extends Service {
 			
 			for (BluetoothGattService service : services) {
 				String suuid = service.getUuid().toString();
-				//Log.i(TAG, "service found: " + suuid);
+				//Log.i(TAG, "service size: " + acceptedServices.size());
 				
-				if (acceptedServices.containsKey(suuid) || acceptedServices.size() == 0) {
+				if (acceptedServices.containsKey(suuid) || acceptedServices.isEmpty()) {
 				    characteristics = service.getCharacteristics();			
 					
 				    bgcHashmap = new HashMap<String, BluetoothGattCharacteristic>();
@@ -303,7 +338,7 @@ public class BleAdapter extends Service {
 						String cuuid = gattCharacteristic.getUuid().toString();
 						//Log.i(TAG, "characteristic found: " + cuuid);
 						
-						if (acceptedCharacteristics.containsKey(cuuid) || acceptedCharacteristics.size() == 0) {
+						if (acceptedCharacteristics.containsKey(cuuid) || acceptedCharacteristics.isEmpty()) {
 							bgcHashmap.put(acceptedCharacteristics.get(cuuid) == null ? cuuid : acceptedCharacteristics.get(cuuid), gattCharacteristic);
 						}
 		
